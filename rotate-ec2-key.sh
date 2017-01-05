@@ -124,7 +124,7 @@ __base="$(basename ${__file} .sh)"
 
 OLD_KEY_FILE=
 EC2_HOST=
-EC2_USER=core
+EC2_USER=ec2-user
 AWS_KEY_FILE=
 JSON_OUTPUT_FILE=
 
