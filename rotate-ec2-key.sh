@@ -189,12 +189,6 @@ VerifyAWSPermissions
 # Check the Linux distro. If it's CoreOS, we need to do some special processing.
 PLATFORM=$(ssh -o StrictHostKeyChecking=no -q -i "$OLD_KEY_FILE" "$EC2_USER@$EC2_HOST" "uname -a")
 echo "Platform: $PLATFORM"
-if [[ $PLATFORM =~ "coreos" ]]; then
-    PLATFORM=coreos
-else
-    PLATFORM=other
-fi
-echo "Platform: $PLATFORM"
 
 # Create a new private key via ssh-keygen
 echo ""
@@ -235,22 +229,13 @@ fi
 
 echo "Test successful. Removing old key..."
 
-if [ "$PLATFORM" == "coreos" ]; then
-    # First, replace the public ssh key mananged by the CoreOS boot manager, ignition. This is stored in:
-    # ~/.ssh/authorized_keys.d/coreos-ignition.
-    # Ignition is a replacement for cloud-init. You can't run cloud-init if you want to rotate keys on CoreOS, because
-    # cloud-init will ignore your changes and pull the EC2 key from the EC2 meta-data on every reboot.
-    ssh -o StrictHostKeyChecking=no -q -i "$OLD_KEY_FILE" "$EC2_USER@$EC2_HOST" \
-            "echo $NEW_PUBLIC_KEY > ~/.ssh/authorized_keys.d/coreos-ignition && update-ssh-keys"
-else
-    # Get a sed-search-safe version of the public key that escapes forward slashes contained in the key
-    OLD_PUBLIC_KEY=$(ssh-keygen -y -f $OLD_KEY_FILE)
-    OLD_PUBLIC_KEY=$(echo "$OLD_PUBLIC_KEY" | sed 's/\//\\\//g')
+# Get a sed-search-safe version of the public key that escapes forward slashes contained in the key
+OLD_PUBLIC_KEY=$(ssh-keygen -y -f $OLD_KEY_FILE)
+OLD_PUBLIC_KEY=$(echo "$OLD_PUBLIC_KEY" | sed 's/\//\\\//g')
 
-     # Remove the old key from ~/.ssh/authorized_keys
-    ssh -o StrictHostKeyChecking=no -q -i "$NEW_PRIVATE_KEY_FILE" "$EC2_USER@$EC2_HOST" \
-            "sed -i \"/$OLD_PUBLIC_KEY/d\" ~/.ssh/authorized_keys"
-fi
+ # Remove the old key from ~/.ssh/authorized_keys
+ssh -o StrictHostKeyChecking=no -q -i "$NEW_PRIVATE_KEY_FILE" "$EC2_USER@$EC2_HOST" \
+        "sed -i \"/$OLD_PUBLIC_KEY/d\" ~/.ssh/authorized_keys"
 
 # Test again with new key
 echo "Re-testing new key..."
