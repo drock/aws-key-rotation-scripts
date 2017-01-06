@@ -27,15 +27,17 @@
 function PrintHelp() {
     echo "usage: $__base.sh [options...] "
     echo "options:"
-    echo " -s --ssh-key-file  Path to EC2 private ssh key file for the key to be replaced. Required."
-    echo " -h --host          IP address or DNS name for the EC2 instance. Required."
-    echo " -a --aws-key-file  The file for the .csv access key file for an AWS administrator. Optional. The AWS administrator"
-    echo "                    must have the rights to create tags for EC2 instances. The script expects the .csv format "
-    echo "                    used when you dowload the key from IAM in the AWS console. If you don't specify a key file,"
-    echo "                    the default credentials in ~/.aws/credentials will be used."
-    echo " -u --user          Root/admin user for the EC2 instance. Optional. The default value is 'core' (for the CoreOS distro)."
-    echo " -j --json          A file to send JSON output to. Optional."
-    echo "    --help          Prints this help message"
+    echo " -s --ssh-key-file        Path to EC2 private ssh key file for the key to be replaced. Required."
+    echo " -k --new-ssh-key-file    Path to EC2 private ssh key file for the new ssh key. Required."
+    echo " -p --new-ssh-pub-file    Path to EC2 public ssh key file for the new ssh key. Required."
+    echo " -h --host                IP address or DNS name for the EC2 instance. Required."
+    echo " -a --aws-key-file        The file for the .csv access key file for an AWS administrator. Optional. The AWS administrator"
+    echo "                          must have the rights to create tags for EC2 instances. The script expects the .csv format "
+    echo "                          used when you dowload the key from IAM in the AWS console. If you don't specify a key file,"
+    echo "                          the default credentials in ~/.aws/credentials will be used."
+    echo " -u --user                Root/admin user for the EC2 instance. Optional. The default value is 'ec2-user' (for the Amazon Linux AMI)."
+    echo " -j --json                A file to send JSON output to. Optional."
+    echo "    --help                Prints this help message"
 }
 
 function ConfigureAwsCli() {
@@ -82,7 +84,8 @@ function VerifyAWSPermissions() {
     echo "Verifying that the AWS CLI credentials are allowed to update tags on the EC2 instance..."
     # Get the current tag value for the
     aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" > ec2_tags
-    TAG_LINE=$(grep -n "EC2KeyName" "ec2_tags" | cut -d':' -f1)
+
+    TAG_LINE=$(sed -n '\|RotatedKey|=' ec2_tags)
 
     # Check if we found a tag specifying EC2 SSH key
     if [[ -z "$TAG_LINE" ]]; then
@@ -96,8 +99,8 @@ function VerifyAWSPermissions() {
     rm ec2_tags
 
     # Make small update to tag for testing purposes, and then revert it back
-    aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=EC2KeyName,Value="$TAG_VALUE "
-    aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=EC2KeyName,Value="$TAG_VALUE"
+    aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=RotatedKey,Value="$TAG_VALUE "
+    aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=RotatedKey,Value="$TAG_VALUE"
     echo "Verified. The AWS credentials have permission to update tags."
 
 }
@@ -130,7 +133,6 @@ JSON_OUTPUT_FILE=
 
 # Check if any arguments were passed. If not, print an error
 if [ $# -eq 0 ]; then
-    echo "error: too few arguments"
     PrintHelp
     exit 2
 fi
@@ -141,6 +143,12 @@ while [ "$1" != "" ]; do
     case "$1" in
         -s | --ssh-key-file) shift
                       OLD_KEY_FILE="$1"
+                      ;;
+        -k | --new-ssh-key-file) shift
+                      NEW_PRIVATE_KEY_FILE="$1"
+                      ;;
+        -p | --new-ssh-pub-file) shift
+                      NEW_PUBLIC_KEY_FILE="$1"
                       ;;
         -h | --host)  shift
                       EC2_HOST="$1"
@@ -168,11 +176,40 @@ while [ "$1" != "" ]; do
 done
 
 # Make sure that all the required arguments were passed into the script
-if [ -z "$OLD_KEY_FILE" ] || [ -z "$EC2_HOST" ] ; then
-    >&2 echo "error: too few arguments"
+if [ -z "$OLD_KEY_FILE" ] ; then
+    >&2 echo "Missing --ssh-key-file"
     PrintHelp
-    exit 0
+    exit 2
 fi
+
+if [ -z "$EC2_HOST" ] ; then
+    >&2 echo "Missing --host"
+    PrintHelp
+    exit 2
+fi
+
+if [ -z "$NEW_PRIVATE_KEY_FILE" ] ; then
+    >&2 echo "Missing --new-ssh-key-file"
+    PrintHelp
+    exit 2
+fi
+
+if [ ! -f "$NEW_PRIVATE_KEY_FILE" ] ; then
+    >&2 echo "Unable to find $NEW_PRIVATE_KEY_FILE"
+    exit 2
+fi
+
+if [ -z "$NEW_PUBLIC_KEY_FILE" ] ; then
+    >&2 echo "Missing --new-ssh-pub-file"
+    PrintHelp
+    exit 2
+fi
+
+if [ ! -f "$NEW_PUBLIC_KEY_FILE" ] ; then
+    >&2 echo "Unable to find $NEW_PRIVATE_KEY_FILE"
+    exit 2
+fi
+
 
 # ======================================================
 # === MAIN SCRIPT
@@ -190,25 +227,11 @@ VerifyAWSPermissions
 PLATFORM=$(ssh -o StrictHostKeyChecking=no -q -i "$OLD_KEY_FILE" "$EC2_USER@$EC2_HOST" "uname -a")
 echo "Platform: $PLATFORM"
 
-# Create a new private key via ssh-keygen
-echo ""
-echo "Generating new keys..."
-cd "$__dir"
-NEW_KEY_LABEL=EC2-Key
-NEW_KEY_NAME="$NEW_KEY_LABEL"-$(date +"%Y-%m-%d-%H%M%S")
-NEW_PRIVATE_KEY_FILE="$NEW_KEY_NAME.pem"
-NEW_PUBLIC_KEY_FILE="$NEW_KEY_NAME.pub"
-
-ssh-keygen -t rsa -f "$NEW_KEY_NAME.pem" -q -N "" -C "$NEW_KEY_NAME"
-mv "$NEW_KEY_NAME.pem.pub" "$NEW_PUBLIC_KEY_FILE"
-NEW_PUBLIC_KEY=$(cat "$NEW_PUBLIC_KEY_FILE")
-
 # Display new key info
+NEW_KEY_NAME=$(basename "$NEW_PRIVATE_KEY_FILE")
 echo "---------------------------------------"
-echo "New key name: $NEW_KEY_NAME"
-echo "New private key file: $NEW_KEY_NAME.pem"
-echo "New public key file: $NEW_KEY_NAME.pub"
-echo "Files are located in directory: $__dir"
+echo "New private key file: $NEW_PRIVATE_KEY_FILE"
+echo "New public key file: $NEW_PRIVATE_KEY_FILE"
 echo "---------------------------------------"
 echo ""
 
@@ -239,7 +262,7 @@ ssh -o StrictHostKeyChecking=no -q -i "$NEW_PRIVATE_KEY_FILE" "$EC2_USER@$EC2_HO
 
 # Test again with new key
 echo "Re-testing new key..."
-NEW_TEST_VALUE=$(ssh -o StrictHostKeyChecking=no -q -i "$NEW_KEY_NAME.pem" "$EC2_USER@$EC2_HOST" "cat ~/.rotation_test_file")
+NEW_TEST_VALUE=$(ssh -o StrictHostKeyChecking=no -q -i "$NEW_PRIVATE_KEY_FILE" "$EC2_USER@$EC2_HOST" "cat ~/.rotation_test_file")
 
 if [ "$NEW_TEST_VALUE" != "$TEST_VALUE" ] ; then
     >&2 echo "WARNING: Second test with the new key failed. Try accessing EC2 instance immediately."
@@ -249,11 +272,11 @@ fi
 echo "Second test successful. Keys have been rotated. Please keep your new key files in a secure location."
 
 # Cleanup the temp file used for testing
-ssh -o StrictHostKeyChecking=no -q -i "$NEW_KEY_NAME.pem" "$EC2_USER@$EC2_HOST" "rm -f ~/.rotation_test_file"
+ssh -o StrictHostKeyChecking=no -q -i "$NEW_PRIVATE_KEY_FILE" "$EC2_USER@$EC2_HOST" "rm -f ~/.rotation_test_file"
 
 # Update the EC2 instance to include a tag with the key name
 echo "Updating the instance tag to include the key name..."
-aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=EC2KeyName,Value="$NEW_KEY_NAME"
+aws ec2 create-tags --resources "$INSTANCE_ID" --tags Key=RotatedKey,Value="$NEW_KEY_NAME"
 
 # Print the JSON file if requested
 if [ ! "$JSON_OUTPUT_FILE" == "" ]; then
